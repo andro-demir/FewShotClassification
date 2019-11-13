@@ -12,21 +12,32 @@ import matplotlib.pyplot as plt
 class basic_block(nn.Module):
     expansion = 1
 
-    def __init__(self, in_planes, planes, stride=1):
+    def __init__(self, in_planes, out_planes, stride=1):
+        '''
+        in_planes(int): number of input channels
+        out_planes(int): number of output channels
+        stride(int): controls the stride for cross-correlation
+        padding is 0 by default in convolutions
+        
+        batch norm calculates the mean and standard deviation per-dimension 
+        over the minibatches during training. At test time, it takes the mean 
+        and variance estimated during training. 
+        By the strong law of large numbers, this should give a good estimation
+        '''
         super(basic_block, self).__init__()
-        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride,
-                               padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(planes)
-        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, 
-                               padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(planes)
+        self.conv1 = nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
+                               padding=1, bias=True)
+        self.bn1 = nn.BatchNorm2d(out_planes)
+        self.conv2 = nn.Conv2d(out_planes, out_planes, kernel_size=3, stride=1, 
+                               padding=1, bias=True)
+        self.bn2 = nn.BatchNorm2d(out_planes)
 
         self.shortcut = nn.Sequential()
-        if stride != 1 or in_planes != self.expansion*planes:
+        if in_planes != self.expansion*out_planes or stride != 1:
             self.shortcut = nn.Sequential(
-                nn.Conv2d(in_planes, self.expansion*planes, kernel_size=1, 
-                          stride=stride, bias=False),
-                nn.BatchNorm2d(self.expansion*planes)
+                nn.Conv2d(in_planes, self.expansion*out_planes, kernel_size=1, 
+                          stride=stride, bias=True),
+                nn.BatchNorm2d(self.expansion*out_planes)
             )
 
     def forward(self, x):
@@ -37,27 +48,24 @@ class basic_block(nn.Module):
         return out
 
 
-'''
+class resnet(nn.Module):
+    '''
     Defines the network architecture, activations and regularizers.
     Forward prop.
     First convolutional layer has kernel size 5x5, stride 1 and the 
-    total number of kernels 32 as conditioned by the project assignment: 
-'''
-class resnet(nn.Module):
-    def __init__(self, 
-                 block, 
-                 num_blocks, 
-                 num_classes=10):
+    total number of kernels is 32 
+    '''
+    def __init__(self, block, num_blocks, num_classes=10):
         super(resnet, self).__init__()
         self.in_planes = 32
         self.conv1 = nn.Conv2d(in_channels=3, out_channels=32, kernel_size=5, 
-                               stride=1, padding=2, bias=False)
+                               stride=1, padding=2, bias=True)
         self.bn1 = nn.BatchNorm2d(num_features=32)
         self.activation = nn.ReLU(inplace=True)
         self.layer1 = self.make_layer(block, 32, num_blocks[0], stride=1)
         self.layer2 = self.make_layer(block, 64, num_blocks[1], stride=2)
         self.layer3 = self.make_layer(block, 128, num_blocks[2], stride=2)
-        self.layer4 = self.make_layer(block, 256, num_blocks[3], stride=2)        
+        self.layer4 = self.make_layer(block, 256, num_blocks[3], stride=2)  
         self.dense = nn.Linear(256*block.expansion, num_classes)
 
     def make_layer(self, block, planes, num_blocks, stride):
@@ -78,7 +86,7 @@ class resnet(nn.Module):
         x = self.layer3(x)
         x = self.layer4(x)
 
-        x = F.avg_pool2d(x, 4)
+        x = F.avg_pool2d(x, kernel_size=4)
         x = x.view(x.size(0), -1)
         x = self.dense(x)
         return x
@@ -87,24 +95,24 @@ class resnet(nn.Module):
 def ResNet18():
     return resnet(basic_block, [2,2,2,2])
 
-'''
+def set_optimization(model):
+    '''
     Sets the loss and optimization criterion and number of epochs.
     They were chosen heuristically.
-'''
-def set_optimization(model):
-    # This criterion combines nn.LogSoftmax() and nn.NLLLoss() 
-    # in one single clas
+    Multi class cross-entropy combines nn.LogSoftmax() and nn.NLLLoss() 
+    in one single class
+    '''
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9, 
                           weight_decay=2e-4)
-    epochs = 10
+    epochs = 20
     return criterion, optimizer, epochs
 
-'''
-    forward + backward prop for 1 epoch
-    prints the loss for every minibatch (2000 images)
-'''
 def train_model(model, trainloader, criterion, optimizer, epoch, device):
+    '''
+    forward + backward prop for 1 epoch
+    prints the loss for every minibatch (64 images)
+    '''
     running_loss = 0.0
     for i, data in enumerate(trainloader, 0):
         # get the inputs
@@ -122,16 +130,17 @@ def train_model(model, trainloader, criterion, optimizer, epoch, device):
 
         # print statistics
         running_loss += loss.item()
-        if i % 2000 == 1999:    # print every 2000 mini-batches
-            print('[epoch: %d, batch: %5d] loss: %.3f' %
-                   (epoch + 1, i + 1, running_loss / 2000))
+        # print every 100 mini-batches, each minibatch has 64 images:
+        if i % 100 == 99:    
+            print('[epoch: %d, batch: %5d] loss/batch: %.3f' %
+                   (epoch+1, i+1 , running_loss / 100))
             running_loss = 0.0
 
-'''
+def test_model(model, testloader, epoch, device):
+    '''
     Tests the model accuracy over the test data in one epoch
     Prints the average loss
-'''
-def test_model(model, testloader, epoch, device):
+    '''
     correct, total = 0, 0
     with torch.no_grad():
         for data in testloader:
@@ -145,17 +154,17 @@ def test_model(model, testloader, epoch, device):
     print('Accuracy of the network on the 10000 test images: %d %%\n' % (
           100 * correct / total))
 
-'''
-    Saves the model to the directory Model
-'''
 def save_model(net):
+    '''
+    Saves the model to the directory Model
+    '''
     torch.save(net.state_dict(), f="Model/model.model")
     print("Model saved successfully.")
 
-'''
-    Loads the network trained by GPU to CPU for inference. 
-'''
 def load_model(net):
+    '''
+    Loads the network trained by GPU to CPU for inference. 
+    '''
     try:
         net.load_state_dict(torch.load("Model/model.model", 
                                        map_location='cpu'))
@@ -166,23 +175,23 @@ def load_model(net):
                " architecture of CopyModel."))
         exit(1) # stop execution with error
 
-'''
-    Trains network using GPU, if available. Otherwise uses CPU.
-'''
 def set_device(net):
+    '''
+    Trains network using GPU, if available. Otherwise uses CPU.
+    '''
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print("Training on: %s\n" %device)
-    # .double() will make sure that  MLP will process tensor
+    # .double() will make sure that MLP will process tensor
     # of type torch.DoubleTensor:
     return net.to(device), device
 
-'''
-    Applies the train_model and test_model functions at each epoch
-'''
 def train():
+    '''
+    Applies the train_model and test_model functions at each epoch
+    '''
     # This loads the dataset and partitions it into batches:
     trainset, testset = dp.load_cifar10()
-    trainloader, testloader = dp.batch_data(trainset, testset)
+    trainloader, testloader = dp.generate_batches(trainset, testset)
     # Loads the model and the training/testing functions:
     net = ResNet18()
     net, device = set_device(net)
@@ -197,10 +206,10 @@ def train():
     # Save the model:
     save_model(net)
 
-'''
-    Classifies the image whose path entered on the terminal.
-'''
 def test(image_path):
+    '''
+    Classifies the image whose path entered on the terminal.
+    '''
     classes = ('plane', 'car', 'bird', 'cat', 'deer', 'dog', 
                'frog', 'horse', 'ship', 'truck')
     img_tensor = dp.load_test_image(image_path).unsqueeze(0)
@@ -216,10 +225,10 @@ def test(image_path):
     _, predicted = torch.max(outputs.data, 1)
     print("Predicted: %s" %classes[predicted[0]])
 
-'''
-    Visualizes and saves the output of the first convolutional layer
-'''
 def save_conv1(img, N=6):
+    '''
+    Visualizes and saves the output of the first convolutional layer
+    '''
     fig = plt.figure(figsize=(N, N))
     for i in range(img.shape[0]):
         ax1 = fig.add_subplot(N, N, i+1)
