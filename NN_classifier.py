@@ -1,3 +1,11 @@
+'''
+TO DO:
+1. Do not force the network to make a prediction for every input.
+   If there's uncertainty, let it say I don't know
+2. For pre-processing allow 1-shot and 5-shot training pipelines
+3. creating a dictionary and trainig on cosine similarity scores 
+'''
+
 import numpy as np
 import fire
 import data_processing as dp
@@ -10,7 +18,6 @@ import torchvision
 import pyro
 from pyro.distributions import Normal, Categorical
 from pyro.infer import SVI, Trace_ELBO
-from pyro.optim import Adam
 import matplotlib.pyplot as plt
 
 class basic_block(nn.Module):
@@ -103,6 +110,13 @@ def ResNet18():
     return resnet(basic_block, [2,2,2,2]).cuda()
 
 def probabilistic_model(inputs, labels):
+    '''
+    pyro.random_module() converts weights and biases into random variables 
+    that have the prior probability distribution given by 
+    dense_weight_prior and dense_bias_prior for a normal distribution
+    this "overloads" the parameters of the random module with
+    samples from the prior!
+    '''
     resnet = ResNet18()
     dense_weight_prior = Normal(loc=torch.zeros_like(resnet.dense.weight), 
                                 scale=torch.ones_like(resnet.dense.weight))
@@ -112,16 +126,17 @@ def probabilistic_model(inputs, labels):
     priors = {'dense.weight': dense_weight_prior, 
               'dense.bias': dense_bias_prior}
     
-    # pyro.random_module() converts weights and biases into random variables 
-    # that have the prior probability distribution given by 
-    # dense_weight_prior and dense_bias_prior with a normal distribution
     lifted_module = pyro.random_module("module", resnet, priors)
     
-    # sample a regressor (which also samples w and b)
-    lifted_reg_model = lifted_module()
+    # This samples a neural network (which also samples weights and biases)
+    # we wrap the nn model with random_module and sample and instance
+    # of the nn
+    sampled_nn_model = lifted_module()
     
-    lhat = F.log_softmax(lifted_reg_model(inputs))
+    # runs the sampled nn on the input data
+    lhat = F.log_softmax(sampled_nn_model(inputs))
     
+    # this shows the output of the network will be categorical
     pyro.sample("obs", Categorical(logits=lhat), obs=labels)
 
 def probabilistic_guide(inputs, labels):
@@ -140,18 +155,30 @@ def probabilistic_guide(inputs, labels):
     dense_b_sigma_param = F.softplus(pyro.param("dense_b_sigma", dense_b_sigma))
     dense_b_prior = Normal(loc=dense_b_mu_param, scale=dense_b_sigma_param)
     
-    priors = {'dense.weight': dense_w_prior, 'dense.bias': dense_b_prior}
+    priors = {'dense.weight': dense_w_prior, 
+              'dense.bias': dense_b_prior}
     
     lifted_module = pyro.random_module("module", resnet, priors)
     
     return lifted_module()
 
-def set_optimization():
+def inference(scheduler=True):
     '''
-    Sets the loss and optimization criterion and number of epochs.
+    Sets the loss and optimization criteria and number of epochs.
+    scheduler decays the learn rate by a multiplicative factor of 
+    gamma at each epoch.
     They were chosen heuristically.
+    To do inference use stochastic variational inference (SVI)
+    at each iteration of the training loop it will take a gradient step 
+    with respect to the ELBO objective
     '''
-    optimizer = Adam({"lr": 0.01})
+    if scheduler == True:
+        optimizer = pyro.optim.ExponentialLR({'optimizer': optim.Adam, 
+                                              'optim_args': {'lr': 0.01}, 
+                                              'gamma': 0.9})
+    else:
+        optimizer = pyro.optim.Adam({"lr": 0.01})
+    
     svi = SVI(probabilistic_model, probabilistic_guide, optimizer, 
               loss=Trace_ELBO())
     epochs = 20
@@ -249,7 +276,7 @@ def train():
     # Loads the model and the training/testing functions:
     net = ResNet18()
     net, device = set_device(net)
-    svi, epochs = set_optimization()
+    svi, epochs = inference()
     
     # Print the train and test accuracy after every epoch:
     for epoch in range(epochs):
