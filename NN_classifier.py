@@ -7,6 +7,10 @@ import torch.nn.init as init
 import torch.nn.functional as F
 import torch.optim as optim
 import torchvision
+import pyro
+from pyro.distributions import Normal, Categorical
+from pyro.infer import SVI, Trace_ELBO
+from pyro.optim import Adam
 import matplotlib.pyplot as plt
 
 class basic_block(nn.Module):
@@ -41,10 +45,14 @@ class basic_block(nn.Module):
             )
 
     def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
+        '''
+        Note: softPlus activation function is a smooth approximation to ReLU
+        it constrains the output to always be positive.
+        '''
+        out = F.softplus(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
         out += self.shortcut(x)
-        out = F.relu(out)
+        out = F.softplus(out)
         return out
 
 
@@ -61,7 +69,6 @@ class resnet(nn.Module):
         self.conv1 = nn.Conv2d(in_channels=3, out_channels=32, kernel_size=5, 
                                stride=1, padding=2, bias=True)
         self.bn1 = nn.BatchNorm2d(num_features=32)
-        self.activation = nn.ReLU(inplace=True)
         self.layer1 = self.make_layer(block, 32, num_blocks[0], stride=1)
         self.layer2 = self.make_layer(block, 64, num_blocks[1], stride=2)
         self.layer3 = self.make_layer(block, 128, num_blocks[2], stride=2)
@@ -79,7 +86,7 @@ class resnet(nn.Module):
     def forward(self, x):
         x = self.conv1(x)
         x = self.bn1(x)
-        x = self.activation(x)
+        x = F.softplus(x)
         
         x = self.layer1(x)
         x = self.layer2(x)
@@ -93,22 +100,64 @@ class resnet(nn.Module):
 
 
 def ResNet18():
-    return resnet(basic_block, [2,2,2,2])
+    return resnet(basic_block, [2,2,2,2]).cuda()
 
-def set_optimization(model):
+def probabilistic_model(inputs, labels):
+    resnet = ResNet18()
+    dense_weight_prior = Normal(loc=torch.zeros_like(resnet.dense.weight), 
+                                scale=torch.ones_like(resnet.dense.weight))
+    dense_bias_prior = Normal(loc=torch.zeros_like(resnet.dense.bias), 
+                              scale=torch.ones_like(resnet.dense.bias))
+       
+    priors = {'dense.weight': dense_weight_prior, 
+              'dense.bias': dense_bias_prior}
+    
+    # pyro.random_module() converts weights and biases into random variables 
+    # that have the prior probability distribution given by 
+    # dense_weight_prior and dense_bias_prior with a normal distribution
+    lifted_module = pyro.random_module("module", resnet, priors)
+    
+    # sample a regressor (which also samples w and b)
+    lifted_reg_model = lifted_module()
+    
+    lhat = F.log_softmax(lifted_reg_model(inputs))
+    
+    pyro.sample("obs", Categorical(logits=lhat), obs=labels)
+
+def probabilistic_guide(inputs, labels):
+    resnet = ResNet18()
+    # Dense layer weight distribution priors
+    dense_w_mu = torch.randn_like(resnet.dense.weight)
+    dense_w_sigma = torch.randn_like(resnet.dense.weight)
+    dense_w_mu_param = pyro.param("dense_w_mu", dense_w_mu)
+    dense_w_sigma_param = F.softplus(pyro.param("dense_w_sigma", dense_w_sigma))
+    dense_w_prior = Normal(loc=dense_w_mu_param, scale=dense_w_sigma_param)
+    
+    # Dense layer bias distribution priors
+    dense_b_mu = torch.randn_like(resnet.dense.bias)
+    dense_b_sigma = torch.randn_like(resnet.dense.bias)
+    dense_b_mu_param = pyro.param("dense_b_mu", dense_b_mu)
+    dense_b_sigma_param = F.softplus(pyro.param("dense_b_sigma", dense_b_sigma))
+    dense_b_prior = Normal(loc=dense_b_mu_param, scale=dense_b_sigma_param)
+    
+    priors = {'dense.weight': dense_w_prior, 'dense.bias': dense_b_prior}
+    
+    lifted_module = pyro.random_module("module", resnet, priors)
+    
+    return lifted_module()
+
+def set_optimization():
     '''
     Sets the loss and optimization criterion and number of epochs.
     They were chosen heuristically.
-    Multi class cross-entropy combines nn.LogSoftmax() and nn.NLLLoss() 
-    in one single class
     '''
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9, 
-                          weight_decay=2e-4)
+    optimizer = Adam({"lr": 0.01})
+    svi = SVI(probabilistic_model, probabilistic_guide, optimizer, 
+              loss=Trace_ELBO())
     epochs = 20
-    return criterion, optimizer, epochs
+    return svi, epochs
 
-def train_model(model, trainloader, criterion, optimizer, epoch, device):
+def train_model(trainloader, svi, epoch, device):
     '''
     forward + backward prop for 1 epoch
     prints the loss for every minibatch (64 images)
@@ -119,37 +168,42 @@ def train_model(model, trainloader, criterion, optimizer, epoch, device):
         inputs, labels = data
         inputs, labels = inputs.to(device), labels.to(device)
         
-        # zero the parameter gradients
-        optimizer.zero_grad()
-
-        # forward + backward + optimize
-        outputs = model(inputs)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
-
-        # print statistics
-        running_loss += loss.item()
+        # calculate the loss and take a gradient step
+        running_loss += svi.step(inputs, labels)
+        
         # print every 100 mini-batches, each minibatch has 64 images:
         if i % 100 == 99:    
             print('[epoch: %d, batch: %5d] loss/batch: %.3f' %
                    (epoch+1, i+1 , running_loss / 100))
             running_loss = 0.0
 
-def test_model(model, testloader, epoch, device):
+def test_model(testloader, epoch, device):
     '''
     Tests the model accuracy over the test data in one epoch
     Prints the average loss
     '''
+    def predict(x):
+        '''
+        samples a new neural network 10 times for making one prediction
+        this gives us uncertainities on outputs
+        to make a prediction, we average the  final layer output values 
+        of the 10 sampled nets for the given input x
+        '''
+        num_forward_passes = 10
+        sampled_models = [probabilistic_guide(None, None) 
+                          for _ in range(num_forward_passes)]
+        yhats = [model(x).data for model in sampled_models]
+        mean = torch.mean(torch.stack(yhats), 0)
+        return np.argmax(mean.cpu().numpy(), axis=1)
+
     correct, total = 0, 0
     with torch.no_grad():
         for data in testloader:
             images, labels = data
             images, labels = images.to(device), labels.to(device)
-            outputs = model(images)
-            _, predicted = torch.max(outputs.data, 1)
+            outputs = predict(images)
             total += labels.size(0)
-            correct += (predicted == labels).sum().item()
+            correct += (outputs == labels.cpu().numpy()).sum().item()
 
     print('Accuracy of the network on the 10000 test images: %d %%\n' % (
           100 * correct / total))
@@ -195,12 +249,12 @@ def train():
     # Loads the model and the training/testing functions:
     net = ResNet18()
     net, device = set_device(net)
-    criterion, optimizer, epochs = set_optimization(net)
+    svi, epochs = set_optimization()
     
     # Print the train and test accuracy after every epoch:
     for epoch in range(epochs):
-        train_model(net, trainloader, criterion, optimizer, epoch, device)
-        test_model(net, testloader, epoch, device)
+        train_model(trainloader, svi, epoch, device)
+        test_model(testloader, epoch, device)
 
     print('Finished Training')   
     # Save the model:
