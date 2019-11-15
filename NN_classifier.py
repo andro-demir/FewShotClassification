@@ -20,6 +20,9 @@ from pyro.distributions import Normal, Categorical
 from pyro.infer import SVI, Trace_ELBO
 import matplotlib.pyplot as plt
 
+#dataset = "cifar10"
+dataset = "mnist"
+
 class basic_block(nn.Module):
     expansion = 1
 
@@ -70,10 +73,11 @@ class resnet(nn.Module):
     First convolutional layer has kernel size 5x5, stride 1 and the 
     total number of kernels is 32 
     '''
-    def __init__(self, block, num_blocks, num_classes=10):
+    def __init__(self, dataset, block, num_blocks, num_classes=10):
         super(resnet, self).__init__()
         self.in_planes = 32
-        self.conv1 = nn.Conv2d(in_channels=3, out_channels=32, kernel_size=5, 
+        in_ch = 3 if dataset == "cifar10" else 1
+        self.conv1 = nn.Conv2d(in_channels=in_ch, out_channels=32, kernel_size=5, 
                                stride=1, padding=2, bias=True)
         self.bn1 = nn.BatchNorm2d(num_features=32)
         self.layer1 = self.make_layer(block, 32, num_blocks[0], stride=1)
@@ -106,8 +110,8 @@ class resnet(nn.Module):
         return x
 
 
-def ResNet18():
-    return resnet(basic_block, [2,2,2,2]).cuda()
+def ResNet18(dataset=dataset):
+    return resnet(dataset, basic_block, [2,2,2,2]).cuda()
 
 def probabilistic_model(inputs, labels):
     '''
@@ -175,13 +179,13 @@ def inference(scheduler=True):
     if scheduler == True:
         optimizer = pyro.optim.ExponentialLR({'optimizer': optim.Adam, 
                                               'optim_args': {'lr': 0.01}, 
-                                              'gamma': 0.9})
+                                              'gamma': 0.95})
     else:
         optimizer = pyro.optim.Adam({"lr": 0.01})
     
     svi = SVI(probabilistic_model, probabilistic_guide, optimizer, 
               loss=Trace_ELBO())
-    epochs = 20
+    epochs = 40
     return svi, epochs
 
 def train_model(trainloader, svi, epoch, device):
@@ -235,20 +239,27 @@ def test_model(testloader, epoch, device):
     print('Accuracy of the network on the 10000 test images: %d %%\n' % (
           100 * correct / total))
 
-def save_model(net):
+def save_model(dataset, net):
     '''
     Saves the model to the directory Model
     '''
-    torch.save(net.state_dict(), f="Model/model.model")
+    if dataset == "cifar10":
+        torch.save(net.state_dict(), f="Model/cifar10_model.model")
+    if dataset == "mnist":
+        torch.save(net.state_dict(), f="Model/mnist_model.model")
     print("Model saved successfully.")
 
-def load_model(net):
+def load_model(dataset, net):
     '''
     Loads the network trained by GPU to CPU for inference. 
     '''
     try:
-        net.load_state_dict(torch.load("Model/model.model", 
-                                       map_location='cpu'))
+        if dataset == "cifar10":
+            net.load_state_dict(torch.load("Model/cifar10_model.model", 
+                                            map_location='cpu'))
+        if dataset == "mnist":
+            net.load_state_dict(torch.load("Model/mnist_model.model", 
+                                            map_location='cpu'))
     except RuntimeError:
         print("Runtime Error!")
         print(("Saved model must have the same network architecture with"
@@ -266,15 +277,20 @@ def set_device(net):
     # of type torch.DoubleTensor:
     return net.to(device), device
 
-def train():
+def train(dataset=dataset):
     '''
     Applies the train_model and test_model functions at each epoch
     '''
     # This loads the dataset and partitions it into batches:
-    trainset, testset = dp.load_cifar10()
+    if dataset == "cifar10":
+        trainset, testset = dp.load_cifar10()
+    if dataset == "mnist":
+        trainset, testset = dp.load_mnist()
+
     trainloader, testloader = dp.generate_batches(trainset, testset)
+    
     # Loads the model and the training/testing functions:
-    net = ResNet18()
+    net = ResNet18(dataset)
     net, device = set_device(net)
     svi, epochs = inference()
     
@@ -285,7 +301,7 @@ def train():
 
     print('Finished Training')   
     # Save the model:
-    save_model(net)
+    save_model(dataset, net)
 
 def test(image_path):
     '''
