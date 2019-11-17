@@ -35,7 +35,8 @@ for evaluation and meta-optimization.
 No same image can be both in the training and test set. 
 '''
 
-from torchmeta.datasets import MiniImagenet, CIFARFS, FC100, TieredImagenet
+from torchmeta.datasets import MiniImagenet, TieredImagenet
+from torchmeta.datasets.cifar100 import CIFARFS, FC100
 from torchmeta.transforms import Categorical, ClassSplitter, Rotation
 from torchvision.transforms import Compose, Resize, ToTensor
 from torchmeta.utils.data import BatchMetaDataLoader
@@ -43,7 +44,7 @@ from torchmeta.utils.data import BatchMetaDataLoader
 class Metadata_generator():
     def __init__(self, K, N, num_test_per_class, batch_size, dataset):
         '''
-        K-shot N-way learning, each N from different unseen classes 
+        N-way K-shot training, each N from different unseen classes 
         '''
         self.K = K
         self.N = N
@@ -54,7 +55,7 @@ class Metadata_generator():
     def generate_batch(self):
         '''
         The data-loaders of torch meta are fully compatible with standard data
-        components of PyTorch, such as Dataset and DataLoader.
+        components of PyTorch, such as Dataset and DataLoade+r.
         Augments the pool of class candidates with variants, such as rotated images
         ''' 
         if self.dataset == "miniImageNet":
@@ -71,6 +72,21 @@ class Metadata_generator():
                             class_augmentations=[Rotation([90, 180, 270])],
                             meta_train=True,
                             download=True)
+
+        if self.dataset == "tieredImageNet":
+            dataset = TieredImagenet("data",
+                            # Number of ways
+                            num_classes_per_task=self.N,
+                            # Resize the images and converts them 
+                            # to PyTorch tensors (from Torchvision)
+                            transform=Compose([Resize(32), ToTensor()]),
+                            # Transform the labels to integers 
+                            target_transform=Categorical(num_classes=self.N),
+                            # Creates new virtual classes with rotated versions
+                            # of the images (from Santoro et al., 2016)
+                            class_augmentations=[Rotation([90, 180, 270])],
+                            meta_train=True,
+                            download=True) 
 
         if self.dataset == "CIFARFS":
             dataset = CIFARFS("data",
@@ -100,35 +116,20 @@ class Metadata_generator():
                             # of the images (from Santoro et al., 2016)
                             class_augmentations=[Rotation([90, 180, 270])],
                             meta_train=True,
-                            download=True)
-
-        if self.dataset == "tieredImageNet":
-            dataset = TieredImagenet("data",
-                            # Number of ways
-                            num_classes_per_task=self.N,
-                            # Resize the images and converts them 
-                            # to PyTorch tensors (from Torchvision)
-                            transform=Compose([Resize(32), ToTensor()]),
-                            # Transform the labels to integers 
-                            target_transform=Categorical(num_classes=self.N),
-                            # Creates new virtual classes with rotated versions
-                            # of the images (from Santoro et al., 2016)
-                            class_augmentations=[Rotation([90, 180, 270])],
-                            meta_train=True,
-                            download=True)        
+                            download=True)      
                         
         dataset = ClassSplitter(dataset, shuffle=True, num_train_per_class=self.K, 
                                 num_test_per_class=self.num_test_per_class)
 
-        dataloader = BatchMetaDataLoader(self.dataset, batch_size=self.batch_size,
+        dataloader = BatchMetaDataLoader(dataset, batch_size=self.batch_size,
                                          num_workers=2)
         return dataloader
 
 def main():
     dataset = "miniImageNet"
+    # dataset = "tieredImageNet"
     # dataset = "CIFARFS"
     # dataset = "FC100"
-    # dataset = "tieredImageNet"
     data_generator = Metadata_generator(5, 5, 15, 16, dataset)
     dataloader = data_generator.generate_batch()
     for batch in dataloader:

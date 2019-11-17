@@ -1,3 +1,9 @@
+'''
+This module downloads MNIST/CIFAR10 datasets,
+augments data, normalizes images, generates batches and 
+if preferred provides K images for N novel classes for the 
+purpose of K-shot N-image classification problems.
+'''
 import numpy as np
 import torch
 import torchvision
