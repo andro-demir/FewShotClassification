@@ -14,8 +14,8 @@ import matplotlib.pyplot as plt
 # PIL used as the format for passing images into torchvision
 
 batch_size = 64
-#dataset = "cifar10"
-dataset = "mnist"
+dataset = "cifar10"
+# dataset = "mnist"
 
 def chained_transformation(dataset):
     '''

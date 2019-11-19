@@ -33,21 +33,30 @@ is separated in two parts: a training set (with N unique data) to adapt
 the model to the task at hand, and a test set (or query set) 
 for evaluation and meta-optimization. 
 No same image can be both in the training and test set. 
+
+Training policy:
+Given N novel classes with only K examples each in train_inputs, 
+predict queries in test_inputs to one of N classes 
 '''
 
-from torchmeta.datasets import MiniImagenet, TieredImagenet
-from torchmeta.datasets.cifar100 import CIFARFS, FC100
+import numpy as np
+from torchmeta.datasets import MiniImagenet, TieredImagenet, CIFARFS, FC100, Omniglot
 from torchmeta.transforms import Categorical, ClassSplitter, Rotation
+import torchvision
 from torchvision.transforms import Compose, Resize, ToTensor
 from torchmeta.utils.data import BatchMetaDataLoader
 
+import matplotlib.pyplot as plt
+
 class Metadata_generator():
-    def __init__(self, K, N, num_test_per_class, batch_size, dataset):
+    def __init__(self, N, K, num_test_per_class, batch_size, dataset):
         '''
-        N-way K-shot training, each N from different unseen classes 
+        N-way K-shot training
+        N: number of different unseen classes 
+        K: how many examples per class for evaluation
         '''
-        self.K = K
         self.N = N
+        self.K = K
         self.num_test_per_class = num_test_per_class
         self.batch_size = batch_size
         self.dataset = dataset
@@ -116,6 +125,21 @@ class Metadata_generator():
                             # of the images (from Santoro et al., 2016)
                             class_augmentations=[Rotation([90, 180, 270])],
                             meta_train=True,
+                            download=True) 
+
+        if self.dataset == "Omniglot":
+            dataset = Omniglot("data",
+                            # Number of ways
+                            num_classes_per_task=self.N,
+                            # Resize the images and converts them 
+                            # to PyTorch tensors (from Torchvision)
+                            transform=Compose([Resize(28), ToTensor()]),
+                            # Transform the labels to integers 
+                            target_transform=Categorical(num_classes=self.N),
+                            # Creates new virtual classes with rotated versions
+                            # of the images (from Santoro et al., 2016)
+                            class_augmentations=[Rotation([90, 180, 270])],
+                            meta_train=True,
                             download=True)      
                         
         dataset = ClassSplitter(dataset, shuffle=True, num_train_per_class=self.K, 
@@ -125,21 +149,59 @@ class Metadata_generator():
                                          num_workers=2)
         return dataloader
 
+
+def test_loading(train_inputs, train_targets, 
+                 test_inputs, test_targets, K, num_test_per_class, eps=0):
+    '''
+    Visualize train inputs and targets for one episode in the batch
+    eps(int): episode number in a batch
+    '''
+    def imshow(img):
+        '''
+        img is the tensor
+        '''
+        npimg = img.numpy()
+        plt.imshow(np.transpose(npimg, (1, 2, 0)))
+        plt.show()
+
+    episode_trainX, episode_trainY = train_inputs[eps], train_targets[eps]
+    episode_testX, episode_testY = test_inputs[eps], test_targets[eps]
+
+    # show images, each row for a different label
+    imshow(torchvision.utils.make_grid(episode_trainX, nrow=K))
+    imshow(torchvision.utils.make_grid(episode_testX, nrow=num_test_per_class))
+    #exit(1)
+    
+
 def main():
     dataset = "miniImageNet"
     # dataset = "tieredImageNet"
     # dataset = "CIFARFS"
     # dataset = "FC100"
-    data_generator = Metadata_generator(5, 5, 15, 16, dataset)
+    # dataset = "Omniglot"
+    N_way = 5
+    K_shot = 5
+    num_test_per_class = 15
+    batch_size = 16 # number of episodes
+    data_generator = Metadata_generator(N_way, K_shot, num_test_per_class,
+                                        batch_size, dataset)
     dataloader = data_generator.generate_batch()
-    for batch in dataloader:
+    for idx, batch in enumerate(dataloader):
+        print("Batch id %i" %idx)
         train_inputs, train_targets = batch["train"]
-        print('Train inputs shape: {0}'.format(train_inputs.shape))    
-        print('Train targets shape: {0}'.format(train_targets.shape))  
+        # train inputs: [batch_size, N_way*K_shot, 3, img_size, img_size]
+        print('Train inputs shape: {0}'.format(train_inputs.shape))   
+        # train targets: [batch_size, N_way*K_shot] 
+        print('Train targets shape: {0}'.format(train_targets.shape))
 
         test_inputs, test_targets = batch["test"]
-        print('Test inputs shape: {0}'.format(test_inputs.shape))      
+        # test_inputs: [batch_size, N_way*num_test_per_class, 3, img_size, img_size]
+        print('Test inputs shape: {0}'.format(test_inputs.shape))  
+        # test_outputs: [batch_size, N_way*num_test_per_class]    
         print('Test targets shape: {0}'.format(test_targets.shape))    
+
+        test_loading(train_inputs, train_targets, 
+                     test_inputs, test_targets, K_shot, num_test_per_class)  
 
 
 if __name__ == '__main__':

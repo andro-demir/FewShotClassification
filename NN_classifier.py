@@ -2,8 +2,7 @@
 TO DO:
 1. Do not force the network to make a prediction for every input.
    If there's uncertainty, let it say I don't know
-2. For pre-processing allow 1-shot and 5-shot training pipelines
-3. creating a dictionary and trainig on cosine similarity scores 
+2. creating a dictionary and training on cosine similarity scores 
 '''
 
 import numpy as np
@@ -20,8 +19,8 @@ from pyro.distributions import Normal, Categorical
 from pyro.infer import SVI, Trace_ELBO
 import matplotlib.pyplot as plt
 
-#dataset = "cifar10"
-dataset = "mnist"
+dataset = "cifar10"
+#dataset = "mnist"
 
 class basic_block(nn.Module):
     expansion = 1
