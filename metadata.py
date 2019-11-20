@@ -61,14 +61,23 @@ class Metadata_generator():
         self.batch_size = batch_size
         self.dataset = dataset
 
-    def generate_batch(self):
+    def generate_batch(self, test):
         '''
         The data-loaders of torch meta are fully compatible with standard data
         components of PyTorch, such as Dataset and DataLoade+r.
         Augments the pool of class candidates with variants, such as rotated images
         ''' 
+        if test == True:
+            meta_train = False
+            meta_test = True
+            f = "metatest"
+        elif test == False:
+            meta_train = True
+            meta_test = False
+            f = "metatrain"
+
         if self.dataset == "miniImageNet":
-            dataset = MiniImagenet("data",
+            dataset = MiniImagenet(f,
                             # Number of ways
                             num_classes_per_task=self.N,
                             # Resize the images and converts them 
@@ -79,11 +88,11 @@ class Metadata_generator():
                             # Creates new virtual classes with rotated versions
                             # of the images (from Santoro et al., 2016)
                             class_augmentations=[Rotation([90, 180, 270])],
-                            meta_train=True,
+                            meta_train=meta_train, meta_test=meta_test,
                             download=True)
 
         if self.dataset == "tieredImageNet":
-            dataset = TieredImagenet("data",
+            dataset = TieredImagenet(f,
                             # Number of ways
                             num_classes_per_task=self.N,
                             # Resize the images and converts them 
@@ -94,11 +103,11 @@ class Metadata_generator():
                             # Creates new virtual classes with rotated versions
                             # of the images (from Santoro et al., 2016)
                             class_augmentations=[Rotation([90, 180, 270])],
-                            meta_train=True,
+                            meta_train=meta_train, meta_test=meta_test,
                             download=True) 
 
         if self.dataset == "CIFARFS":
-            dataset = CIFARFS("data",
+            dataset = CIFARFS(f,
                             # Number of ways
                             num_classes_per_task=self.N,
                             # Resize the images and converts them 
@@ -109,11 +118,11 @@ class Metadata_generator():
                             # Creates new virtual classes with rotated versions
                             # of the images (from Santoro et al., 2016)
                             class_augmentations=[Rotation([90, 180, 270])],
-                            meta_train=True,
+                            meta_train=meta_train, meta_test=meta_test,
                             download=True)
 
         if self.dataset == "FC100":
-            dataset = FC100("data",
+            dataset = FC100(f,
                             # Number of waysfrom torchmeta.datasets
                             num_classes_per_task=self.N,
                             # Resize the images and converts them 
@@ -124,11 +133,11 @@ class Metadata_generator():
                             # Creates new virtual classes with rotated versions
                             # of the images (from Santoro et al., 2016)
                             class_augmentations=[Rotation([90, 180, 270])],
-                            meta_train=True,
+                            meta_train=meta_train, meta_test=meta_test,
                             download=True) 
 
         if self.dataset == "Omniglot":
-            dataset = Omniglot("data",
+            dataset = Omniglot(f,
                             # Number of ways
                             num_classes_per_task=self.N,
                             # Resize the images and converts them 
@@ -139,7 +148,7 @@ class Metadata_generator():
                             # Creates new virtual classes with rotated versions
                             # of the images (from Santoro et al., 2016)
                             class_augmentations=[Rotation([90, 180, 270])],
-                            meta_train=True,
+                            meta_train=meta_train, meta_test=meta_test,
                             download=True)      
                         
         dataset = ClassSplitter(dataset, shuffle=True, num_train_per_class=self.K, 
@@ -174,18 +183,19 @@ def test_loading(train_inputs, train_targets,
     
 
 def main():
-    # dataset = "miniImageNet"
+    dataset = "miniImageNet"
     # dataset = "tieredImageNet"
-    dataset = "CIFARFS"
+    # dataset = "CIFARFS"
     # dataset = "FC100"
     # dataset = "Omniglot"
     N_way = 5
     K_shot = 5
     num_test_per_class = 15
     batch_size = 16 # number of episodes
+    test = True # download metatest data if True else download metatrain data
     data_generator = Metadata_generator(N_way, K_shot, num_test_per_class,
                                         batch_size, dataset)
-    dataloader = data_generator.generate_batch()
+    dataloader = data_generator.generate_batch(test)
     for idx, batch in enumerate(dataloader):
         print("Batch id %i" %idx)
         # train set is the support set

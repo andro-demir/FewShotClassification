@@ -18,6 +18,7 @@ import pyro
 from pyro.distributions import Normal, Categorical
 from pyro.infer import SVI, Trace_ELBO
 from metadata import Metadata_generator as MG
+from utils.helper import save_model, load_model, set_device
 import matplotlib.pyplot as plt
 
 # dataset = "cifar10"
@@ -28,14 +29,13 @@ dataset = "miniImageNet"
 # dataset = "FC100"
 # dataset = "Omniglot"
 
-if dataset != "cifar10" and dataset != "mnist":
+if dataset not in ["cifar10", "mnist"]:
     N_way = 5
     K_shot = 5
     num_test_per_class = 15
     batch_size = 16 # number of episodes
     data_generator = MG(N_way, K_shot, num_test_per_class,
                         batch_size, dataset)
-    dataloader = data_generator.generate_batch()
 
 class basic_block(nn.Module):
     expansion = 1
@@ -87,7 +87,7 @@ class resnet(nn.Module):
     First convolutional layer has kernel size 5x5, stride 1 and the 
     total number of kernels is 32 
     '''
-    def __init__(self, dataset, block, num_blocks, num_classes=10):
+    def __init__(self, dataset, block, num_blocks, num_classes):
         super(resnet, self).__init__()
         self.in_planes = 32
         in_ch = 1 if dataset == "mnist" or dataset == "Omniglot" else 3
@@ -98,7 +98,7 @@ class resnet(nn.Module):
         self.layer2 = self.make_layer(block, 64, num_blocks[1], stride=2)
         self.layer3 = self.make_layer(block, 128, num_blocks[2], stride=2)
         self.layer4 = self.make_layer(block, 256, num_blocks[3], stride=2)  
-        if dataset in ["mnist", "Omniglot", "CIFARFS", "FC100"]:
+        if dataset in ["mnist", "cifar10", "Omniglot", "CIFARFS", "FC100"]:
             W = 256
         if dataset in ["miniImageNet", "tieredImageNet"]:
             W = 1024
@@ -130,7 +130,11 @@ class resnet(nn.Module):
 
 
 def ResNet18(dataset=dataset):
-    return resnet(dataset, basic_block, [2,2,2,2]).cuda()
+    if dataset in ["cifar10", "mnist"]:
+        num_classes = 10
+    else:
+        num_classes = N_way
+    return resnet(dataset, basic_block, [2,2,2,2], num_classes).cuda()
 
 def probabilistic_model(inputs, labels):
     '''
@@ -231,7 +235,7 @@ def train_model(trainloader, svi, epoch, device):
     
     if dataset in ["miniImageNet", "tieredImageNet", "CIFARFS", "FC100", 
                    "Omniglot"]:
-        for i, batch in enumerate(dataloader):
+        for i, batch in enumerate(trainloader):
             support_inputs, support_targets = batch["train"]
             query_inputs, query_targets = batch["test"]
             # episodic training:
@@ -279,69 +283,6 @@ def test_model(testloader, epoch, device):
     print('Accuracy of the network on the 10000 test images: %d %%\n' % (
           100 * correct / total))
 
-def save_model(dataset, net):
-    '''
-    Saves the model to the directory Model
-    '''
-    if dataset == "cifar10":
-        torch.save(net.state_dict(), f="Model/cifar10_model.model")
-    if dataset == "mnist":
-        torch.save(net.state_dict(), f="Model/mnist_model.model")
-    if dataset == "Omniglot":
-        torch.save(net.state_dict(), f="Model/omniglot_model.model")
-    if dataset == "miniImageNet":
-        torch.save(net.state_dict(), f="Model/miniImageNet_model.model")
-    if dataset == "tieredImageNet":
-        torch.save(net.state_dict(), f="Model/tieredImageNet_model.model")
-    if dataset == "FC100":
-        torch.save(net.state_dict(), f="Model/FC100_model.model")
-    if dataset == "CIFARFS":
-        torch.save(net.state_dict(), f="Model/CIFARFS_model.model")
-    print("Model saved successfully.")
-
-def load_model(dataset, net):
-    '''
-    Loads the network trained by GPU to CPU for inference. 
-    '''
-    try:
-        if dataset == "cifar10":
-            net.load_state_dict(torch.load("Model/cifar10_model.model", 
-                                            map_location='cpu'))
-        if dataset == "mnist":
-            net.load_state_dict(torch.load("Model/mnist_model.model", 
-                                            map_location='cpu'))
-        if dataset == "Omniglot":
-            net.load_state_dict(torch.load("Model/omniglot_model.model", 
-                                            map_location='cpu'))
-        if dataset == "miniImageNet":
-            net.load_state_dict(torch.load("Model/miniImageNet_model.model", 
-                                            map_location='cpu'))
-        if dataset == "tieredImageNet":
-            net.load_state_dict(torch.load("Model/tieredImageNet_model.model", 
-                                            map_location='cpu'))
-        if dataset == "FC100":
-            net.load_state_dict(torch.load("Model/FC100_model.model", 
-                                            map_location='cpu'))
-        if dataset == "CIFARFS":
-            net.load_state_dict(torch.load("Model/CIFARFS_model.model", 
-                                            map_location='cpu'))                                            
-    except RuntimeError:
-        print("Runtime Error!")
-        print(("Saved model must have the same network architecture with"
-               " the CopyModel.\nRe-train and save again or fix the" 
-               " architecture of CopyModel."))
-        exit(1) # stop execution with error
-
-def set_device(net):
-    '''
-    Trains network using GPU, if available. Otherwise uses CPU.
-    '''
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print("Training on: %s\n" %device)
-    # .double() will make sure that MLP will process tensor
-    # of type torch.DoubleTensor:
-    return net.to(device), device
-
 def train(dataset=dataset):
     '''
     Applies the train_model and test_model functions at each epoch
@@ -355,8 +296,8 @@ def train(dataset=dataset):
         trainloader, testloader = dp.generate_batches(trainset, testset)
     if dataset in ["miniImageNet", "tieredImageNet", "CIFARFS", "FC100", 
                    "Omniglot"]:
-        meta_train = data_generator.generate_batch()
-        # mate_test needs to be defined here!
+        meta_train = data_generator.generate_batch(test=False)
+        meta_test = data_generator.generate_batch(test=True)
           
     # Loads the model and the training/testing functions:
     net = ResNet18(dataset)
@@ -373,7 +314,7 @@ def train(dataset=dataset):
                    "Omniglot"]:
         for epoch in range(epochs):
             train_model(meta_train, svi, epoch, device)
-            #test_model(meta_test, epoch, device) metatest konusu ..  
+            test_model(meta_test, epoch, device) 
     
     print('Finished Training')   
     # Save the model:
