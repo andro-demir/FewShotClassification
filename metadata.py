@@ -88,7 +88,7 @@ class Metadata_generator():
                             num_classes_per_task=self.N,
                             # Resize the images and converts them 
                             # to PyTorch tensors (from Torchvision)
-                            transform=Compose([Resize(32), ToTensor()]),
+                            transform=Compose([Resize(84), ToTensor()]),
                             # Transform the labels to integers 
                             target_transform=Categorical(num_classes=self.N),
                             # Creates new virtual classes with rotated versions
@@ -103,7 +103,7 @@ class Metadata_generator():
                             num_classes_per_task=self.N,
                             # Resize the images and converts them 
                             # to PyTorch tensors (from Torchvision)
-                            transform=Compose([Resize(84), ToTensor()]),
+                            transform=Compose([Resize(32), ToTensor()]),
                             # Transform the labels to integers 
                             target_transform=Categorical(num_classes=self.N),
                             # Creates new virtual classes with rotated versions
@@ -114,7 +114,7 @@ class Metadata_generator():
 
         if self.dataset == "FC100":
             dataset = FC100("data",
-                            # Number of ways
+                            # Number of waysfrom torchmeta.datasets
                             num_classes_per_task=self.N,
                             # Resize the images and converts them 
                             # to PyTorch tensors (from Torchvision)
@@ -174,9 +174,9 @@ def test_loading(train_inputs, train_targets,
     
 
 def main():
-    dataset = "miniImageNet"
+    # dataset = "miniImageNet"
     # dataset = "tieredImageNet"
-    # dataset = "CIFARFS"
+    dataset = "CIFARFS"
     # dataset = "FC100"
     # dataset = "Omniglot"
     N_way = 5
@@ -188,12 +188,14 @@ def main():
     dataloader = data_generator.generate_batch()
     for idx, batch in enumerate(dataloader):
         print("Batch id %i" %idx)
+        # train set is the support set
         train_inputs, train_targets = batch["train"]
         # train inputs: [batch_size, N_way*K_shot, 3, img_size, img_size]
         print('Train inputs shape: {0}'.format(train_inputs.shape))   
         # train targets: [batch_size, N_way*K_shot] 
         print('Train targets shape: {0}'.format(train_targets.shape))
 
+        # test set is the query set
         test_inputs, test_targets = batch["test"]
         # test_inputs: [batch_size, N_way*num_test_per_class, 3, img_size, img_size]
         print('Test inputs shape: {0}'.format(test_inputs.shape))  

@@ -17,10 +17,25 @@ import torchvision
 import pyro
 from pyro.distributions import Normal, Categorical
 from pyro.infer import SVI, Trace_ELBO
+from metadata import Metadata_generator as MG
 import matplotlib.pyplot as plt
 
-dataset = "cifar10"
-#dataset = "mnist"
+# dataset = "cifar10"
+# dataset = "mnist"
+dataset = "miniImageNet"
+# dataset = "tieredImageNet"
+# dataset = "CIFARFS"
+# dataset = "FC100"
+# dataset = "Omniglot"
+
+if dataset != "cifar10" and dataset != "mnist":
+    N_way = 5
+    K_shot = 5
+    num_test_per_class = 15
+    batch_size = 16 # number of episodes
+    data_generator = MG(N_way, K_shot, num_test_per_class,
+                        batch_size, dataset)
+    dataloader = data_generator.generate_batch()
 
 class basic_block(nn.Module):
     expansion = 1
@@ -75,7 +90,7 @@ class resnet(nn.Module):
     def __init__(self, dataset, block, num_blocks, num_classes=10):
         super(resnet, self).__init__()
         self.in_planes = 32
-        in_ch = 3 if dataset == "cifar10" else 1
+        in_ch = 1 if dataset == "mnist" or dataset == "Omniglot" else 3
         self.conv1 = nn.Conv2d(in_channels=in_ch, out_channels=32, kernel_size=5, 
                                stride=1, padding=2, bias=True)
         self.bn1 = nn.BatchNorm2d(num_features=32)
@@ -83,7 +98,11 @@ class resnet(nn.Module):
         self.layer2 = self.make_layer(block, 64, num_blocks[1], stride=2)
         self.layer3 = self.make_layer(block, 128, num_blocks[2], stride=2)
         self.layer4 = self.make_layer(block, 256, num_blocks[3], stride=2)  
-        self.dense = nn.Linear(256*block.expansion, num_classes)
+        if dataset in ["mnist", "Omniglot", "CIFARFS", "FC100"]:
+            W = 256
+        if dataset in ["miniImageNet", "tieredImageNet"]:
+            W = 1024
+        self.dense = nn.Linear(W * block.expansion, num_classes)
 
     def make_layer(self, block, planes, num_blocks, stride):
         strides = [stride] + [1]*(num_blocks-1)
@@ -97,13 +116,14 @@ class resnet(nn.Module):
         x = self.conv1(x)
         x = self.bn1(x)
         x = F.softplus(x)
-        
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
-
+        
         x = F.avg_pool2d(x, kernel_size=4)
+        # view reshape tensor x. we don't know how many columns we want
+        # but are sure of the number of rows, so we specify this with a -1
         x = x.view(x.size(0), -1)
         x = self.dense(x)
         return x
@@ -190,22 +210,43 @@ def inference(scheduler=True):
 def train_model(trainloader, svi, epoch, device):
     '''
     forward + backward prop for 1 epoch
-    prints the loss for every minibatch (64 images)
+    prints the loss for every minibatch 
     '''
     running_loss = 0.0
-    for i, data in enumerate(trainloader, 0):
-        # get the inputs
-        inputs, labels = data
-        inputs, labels = inputs.to(device), labels.to(device)
-        
-        # calculate the loss and take a gradient step
-        running_loss += svi.step(inputs, labels)
-        
-        # print every 100 mini-batches, each minibatch has 64 images:
-        if i % 100 == 99:    
-            print('[epoch: %d, batch: %5d] loss/batch: %.3f' %
-                   (epoch+1, i+1 , running_loss / 100))
-            running_loss = 0.0
+    
+    if dataset == "mnist" or dataset == "cifar10":
+        for i, data in enumerate(trainloader, 0):
+            # get the inputs
+            inputs, labels = data
+            inputs, labels = inputs.to(device), labels.to(device)
+            
+            # calculate the loss and take a gradient step
+            running_loss += svi.step(inputs, labels)
+            
+            # print every 100 mini-batches, each minibatch has 64 images:
+            if i % 100 == 99:    
+                print('[epoch: %d, batch: %5d] loss/batch: %.3f' %
+                    (epoch+1, i+1 , running_loss / 100))
+                running_loss = 0.0
+    
+    if dataset in ["miniImageNet", "tieredImageNet", "CIFARFS", "FC100", 
+                   "Omniglot"]:
+        for i, batch in enumerate(dataloader):
+            support_inputs, support_targets = batch["train"]
+            query_inputs, query_targets = batch["test"]
+            # episodic training:
+            for support_input, support_target in zip(support_inputs, support_targets):
+                support_input = support_input.to(device)
+                support_target = support_target.to(device) 
+
+                # calculate the loss and take a gradient step
+                running_loss += svi.step(support_input, support_target)
+            
+            # print every 10 mini-batches:
+            if i % 10 == 9:    
+                print('[epoch: %d, batch: %5d] loss/batch: %.3f' %
+                    (epoch+1, i+1 , running_loss / 10))
+                running_loss = 0.0
 
 def test_model(testloader, epoch, device):
     '''
@@ -246,6 +287,16 @@ def save_model(dataset, net):
         torch.save(net.state_dict(), f="Model/cifar10_model.model")
     if dataset == "mnist":
         torch.save(net.state_dict(), f="Model/mnist_model.model")
+    if dataset == "Omniglot":
+        torch.save(net.state_dict(), f="Model/omniglot_model.model")
+    if dataset == "miniImageNet":
+        torch.save(net.state_dict(), f="Model/miniImageNet_model.model")
+    if dataset == "tieredImageNet":
+        torch.save(net.state_dict(), f="Model/tieredImageNet_model.model")
+    if dataset == "FC100":
+        torch.save(net.state_dict(), f="Model/FC100_model.model")
+    if dataset == "CIFARFS":
+        torch.save(net.state_dict(), f="Model/CIFARFS_model.model")
     print("Model saved successfully.")
 
 def load_model(dataset, net):
@@ -259,6 +310,21 @@ def load_model(dataset, net):
         if dataset == "mnist":
             net.load_state_dict(torch.load("Model/mnist_model.model", 
                                             map_location='cpu'))
+        if dataset == "Omniglot":
+            net.load_state_dict(torch.load("Model/omniglot_model.model", 
+                                            map_location='cpu'))
+        if dataset == "miniImageNet":
+            net.load_state_dict(torch.load("Model/miniImageNet_model.model", 
+                                            map_location='cpu'))
+        if dataset == "tieredImageNet":
+            net.load_state_dict(torch.load("Model/tieredImageNet_model.model", 
+                                            map_location='cpu'))
+        if dataset == "FC100":
+            net.load_state_dict(torch.load("Model/FC100_model.model", 
+                                            map_location='cpu'))
+        if dataset == "CIFARFS":
+            net.load_state_dict(torch.load("Model/CIFARFS_model.model", 
+                                            map_location='cpu'))                                            
     except RuntimeError:
         print("Runtime Error!")
         print(("Saved model must have the same network architecture with"
@@ -283,21 +349,32 @@ def train(dataset=dataset):
     # This loads the dataset and partitions it into batches:
     if dataset == "cifar10":
         trainset, testset = dp.load_cifar10()
+        trainloader, testloader = dp.generate_batches(trainset, testset)
     if dataset == "mnist":
         trainset, testset = dp.load_mnist()
-
-    trainloader, testloader = dp.generate_batches(trainset, testset)
-    
+        trainloader, testloader = dp.generate_batches(trainset, testset)
+    if dataset in ["miniImageNet", "tieredImageNet", "CIFARFS", "FC100", 
+                   "Omniglot"]:
+        meta_train = data_generator.generate_batch()
+        # mate_test needs to be defined here!
+          
     # Loads the model and the training/testing functions:
     net = ResNet18(dataset)
     net, device = set_device(net)
     svi, epochs = inference()
     
     # Print the train and test accuracy after every epoch:
-    for epoch in range(epochs):
-        train_model(trainloader, svi, epoch, device)
-        test_model(testloader, epoch, device)
-
+    if dataset == "mnist" or dataset == "cifar10":
+        for epoch in range(epochs):
+            train_model(trainloader, svi, epoch, device)
+            test_model(testloader, epoch, device)
+    
+    if dataset in ["miniImageNet", "tieredImageNet", "CIFARFS", "FC100", 
+                   "Omniglot"]:
+        for epoch in range(epochs):
+            train_model(meta_train, svi, epoch, device)
+            #test_model(meta_test, epoch, device) metatest konusu ..  
+    
     print('Finished Training')   
     # Save the model:
     save_model(dataset, net)
